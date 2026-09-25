@@ -10,7 +10,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap" rel="stylesheet">
 <style>
-  * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+  * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; -webkit-touch-callout: none; }
   html, body {
     height: 100%; background: #1a1c2c; color: #f4f4f4;
     font-family: "Press Start 2P", "Courier New", monospace;
@@ -22,9 +22,10 @@
     gap: 8px; padding: 8px;
   }
   /* Desktop: portrait 400x800 window, max 800px tall, centred */
-  #wrap { position: relative; height: min(800px, 100%); aspect-ratio: 1 / 2; max-width: 100%; flex: none; }
+  #wrap { contain: layout style paint; isolation: isolate; position: relative; height: min(800px, 100%); aspect-ratio: 1 / 2; max-width: 100%; flex: none; }
   canvas {
-    display: block; width: 100%; height: 100%; image-rendering: pixelated; image-rendering: crisp-edges;
+    display: block; width: 100%; height: 100%; touch-action: none; user-select: none; -webkit-user-select: none;
+    will-change: transform; transform: translateZ(0); backface-visibility: hidden; image-rendering: pixelated; image-rendering: crisp-edges;
     border: 4px solid #f4f4f4; box-shadow: 0 0 0 4px #000, 8px 8px 0 4px #000; background: #000;
   }
   .overlay {
@@ -167,6 +168,16 @@
     { name: 'NORMÁLNÍ', mul: 1, lives: 3, info: '3 životy' },
     { name: 'TĚŽKÁ', mul: 1.22, lives: 1, info: '1 život, rychlejší' },
   ];
+
+  // ================= Performance profile =================
+  function detectDevicePerformance() {
+    const isMobile = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent) || (navigator.maxTouchPoints > 1 && matchMedia('(pointer: coarse)').matches);
+    const cores = navigator.hardwareConcurrency || 2, memory = navigator.deviceMemory || 4;
+    if (isMobile && (cores < 4 || memory < 4)) return { tier: 'low', maxFPS: 30, maxParticles: 30, blurEnabled: false, shadowsEnabled: false, parallaxLayers: 1 };
+    if (isMobile) return { tier: 'mid', maxFPS: 60, maxParticles: 50, blurEnabled: true, shadowsEnabled: false, parallaxLayers: 2 };
+    return { tier: 'high', maxFPS: 60, maxParticles: 100, blurEnabled: true, shadowsEnabled: true, parallaxLayers: 3 };
+  }
+  const perf = detectDevicePerformance();
 
   function resize() {
     const r = $('wrap').getBoundingClientRect();
@@ -482,10 +493,25 @@
       rocket: { k: '#1a1a1a', w: '#7d7d85', g: '#a8321e' }, flame: { r: '#ff3b30', y: '#ffcd75' }, smoke: true,
     },
   ];
-  THEMES.forEach(t => {
+  // Depth of field: far layer blur(2px), mid layer blur(1px), ground stays sharp.
+  // Baked once into the cached layer canvas, so it costs nothing per frame.
+  const canFilter = (() => { try { const g = document.createElement('canvas').getContext('2d'); g.filter = 'blur(1px)'; return g.filter === 'blur(1px)'; } catch (e) { return false; } })();
+  function blurred(src, px) {
+    if (!perf.blurEnabled || !px) return src;
+    return canvasOf(src.width, src.height, g => {
+      if (canFilter) { g.filter = `blur(${px}px)`; for (let dx = -src.width; dx <= src.width; dx += src.width) g.drawImage(src, dx, 0); }
+      else { // fallback: down/up-scale blur
+        const f = 1 / (px + 1), tmp = canvasOf(Math.ceil(src.width * f), Math.ceil(src.height * f), t => { t.imageSmoothingEnabled = true; t.drawImage(src, 0, 0, src.width * f, src.height * f); });
+        g.imageSmoothingEnabled = true; g.drawImage(tmp, 0, 0, src.width, src.height);
+      }
+    });
+  }
+  function buildTheme(t) {
+    if (t.built) return t;
+    t.built = true;
     t.skyC = canvasOf(LW, GY, g => { bands(g, LW, GY, t.sky); t.skyFx(g); });
-    t.farC = canvasOf(LW, GY, g => t.far(g));
-    t.nearC = canvasOf(LW, GY, g => t.near(g));
+    t.farC = blurred(canvasOf(LW, GY, g => t.far(g)), 2);
+    t.nearC = blurred(canvasOf(LW, GY, g => t.near(g)), 1);
     t.groundC = canvasOf(64, H - GY, (g, w, h) => t.ground(g, w, h));
     t.cloudC = t.cloud ? makeSprite(cloudRows, { w: t.cloud }, 4) : null;
     const cur = makeSprite(cursorRows, t.cursor);
@@ -498,7 +524,10 @@
       t.rocketC = [s, s];
       t.flameC = flameMaps.map(m => makeSprite(m, t.flame));
     }
-  });
+    return t;
+  }
+  const idle = window.requestIdleCallback || (fn => setTimeout(fn, 50));
+  function preloadTheme(i) { if (!THEMES[i].built) idle(() => buildTheme(THEMES[i])); }
   const chimney = makeSprite(['kkkk', 'kggk', 'kggk', 'kggk'], { k: '#1a1a1a', g: '#555' });
 
   // ================= Collectibles (50) =================
@@ -668,16 +697,29 @@
   let speed, dist, distAcc, score, streak, streakAcc, maxStreak, lives, invuln, fx, runFound, runNew;
   let spawnT, itemT, lineT, frame = 0, shake = 0, lastT = 0, happyT = 0;
   let offSky = 0, offFar = 0, offNear = 0, offGround = 0;
-  let themeCur = Math.floor(Math.random() * 5), themeNext = -1, fadeT = 0, themeT = 300;
+  let themeCur = Math.floor(Math.random() * 5), themeNext = -1, fadeT = 0, themeT = 300, themeQueued = -1;
+  buildTheme(THEMES[themeCur]);
   const FADE = 120;
   const input = { jump: false, duck: false, jumpQueued: false };
 
   clouds = Array.from({ length: 6 }, (_, i) => ({ x: i * 90 + Math.random() * 60, y: 40 + Math.random() * 260, s: 0.2 + Math.random() * 0.3 }));
+  // Object pool for particles: no per-frame allocations, hard cap per device tier.
+  class ObjectPool {
+    constructor(createFn, size) { this.createFn = createFn; this.pool = []; for (let i = 0; i < size; i++) this.pool.push(createFn()); }
+    get() { return this.pool.pop() || this.createFn(); }
+    release(o) { this.pool.push(o); }
+  }
+  const particlePool = new ObjectPool(() => ({ x: 0, y: 0, vx: 0, vy: 0, life: 0, max: 1, c: '#fff', s: 2, g: 0 }), 120);
+  function spawnP(o) {
+    if (particles.length >= perf.maxParticles) { if (perf.maxParticles <= 0) return; particlePool.release(particles.shift()); }
+    particles.push(Object.assign(particlePool.get(), o));
+  }
+  function clearParticles() { for (const q of particles) particlePool.release(q); particles.length = 0; }
   particles = []; popups = []; bigFx = null;
 
   function reset() {
     p = { y: GY - 32, vy: 0, onGround: true, duck: false, dead: false };
-    obstacles = []; items = []; lines = []; particles = []; popups = []; bigFx = null;
+    obstacles = []; items = []; lines = []; clearParticles(); popups = []; bigFx = null;
     speed = 4.5; dist = 0; distAcc = 0; score = 0; streak = 1; streakAcc = 0; maxStreak = 1;
     lives = DIFFS[settings.diff].lives; invuln = 0; fx = { x2: 0, half: 0, shield: 0 };
     runFound = 0; runNew = 0; spawnT = 90; itemT = 140; lineT = 420; shake = 0; happyT = 0;
@@ -685,17 +727,17 @@
   }
   reset();
 
-  const activeTheme = () => THEMES[themeNext >= 0 ? themeNext : themeCur];
+  const activeTheme = () => buildTheme(THEMES[themeNext >= 0 ? themeNext : themeCur]);
 
   // ================= Effects helpers =================
   function burst(x, y, n, cols, spd = 3, life = 30, grav = 0.15, size = 3) {
-    for (let i = 0; i < n && particles.length < 350; i++) {
+    for (let i = 0; i < n; i++) {
       const a = Math.random() * Math.PI * 2, v = spd * (0.3 + Math.random());
-      particles.push({ x, y, vx: Math.cos(a) * v, vy: Math.sin(a) * v, life: life * (0.6 + Math.random() * 0.6), max: life, c: pick(cols), s: size, g: grav });
+      spawnP({ x, y, vx: Math.cos(a) * v, vy: Math.sin(a) * v, life: life * (0.6 + Math.random() * 0.6), max: life, c: pick(cols), s: size, g: grav });
     }
   }
   function dust(x, y, n = 6) {
-    for (let i = 0; i < n; i++) particles.push({ x: x + Math.random() * 20, y, vx: -1 - Math.random() * 2, vy: -Math.random() * 1.5, life: 20, max: 20, c: pick(['#d8d0c0', '#b0a898', '#ffffff']), s: 4, g: 0.05 });
+    for (let i = 0; i < n; i++) spawnP({ x: x + Math.random() * 20, y, vx: -1 - Math.random() * 2, vy: -Math.random() * 1.5, life: 20, max: 20, c: pick(['#d8d0c0', '#b0a898', '#ffffff']), s: 4, g: 0.05 });
   }
   function popup(text, x, y, color, size = 12) { popups.push({ text, x, y, color, size, t: 50 }); }
   function big(text, color) { bigFx = { text, color, t: 70 }; }
@@ -808,7 +850,9 @@
       if (fadeT >= FADE) { themeCur = themeNext; themeNext = -1; fadeT = 0; themeT = menu ? 300 : (10 + Math.random() * 20) * 60; }
     } else {
       themeT -= dt;
-      if (themeT <= 0) { let n; do n = Math.floor(Math.random() * 5); while (n === themeCur); themeNext = n; fadeT = 0; }
+      if (themeQueued < 0 || themeQueued === themeCur) { do themeQueued = Math.floor(Math.random() * 5); while (themeQueued === themeCur); }
+      if (themeT < 180) preloadTheme(themeQueued);
+      if (themeT <= 0) { themeNext = themeQueued; buildTheme(THEMES[themeNext]); themeQueued = -1; fadeT = 0; }
     }
   }
 
@@ -819,8 +863,13 @@
     const mv = sp * dt;
     offSky += mv * 0.03; offFar += mv * 0.15; offNear += mv * 0.45; offGround += mv;
     clouds.forEach(c => { c.x -= (c.s + sp * 0.08) * dt; if (c.x < -70) { c.x = W + Math.random() * 60; c.y = 40 + Math.random() * 260; } });
-    particles.forEach(q => { q.x += q.vx * dt; q.y += q.vy * dt; q.vy += q.g * dt; q.life -= dt; });
-    particles = particles.filter(q => q.life > 0);
+    let pn = 0; // in-place compaction, dead/offscreen particles go back to the pool
+    for (let i = 0; i < particles.length; i++) {
+      const q = particles[i];
+      q.x += q.vx * dt; q.y += q.vy * dt; q.vy += q.g * dt; q.life -= dt;
+      if (q.life > 0 && q.x > -100 && q.x < W + 100) particles[pn++] = q; else particlePool.release(q);
+    }
+    particles.length = pn;
     popups.forEach(q => { q.y -= 0.8 * dt; q.t -= dt; });
     popups = popups.filter(q => q.t > 0);
     if (bigFx && (bigFx.t -= dt) <= 0) bigFx = null;
@@ -860,18 +909,18 @@
     obstacles.forEach(o => {
       o.x -= (speed + o.vx) * dt;
       if (o.type === 'grog' && o.th.smoke && Math.random() < 0.3 * dt)
-        particles.push({ x: o.x + 38, y: o.y - 8, vx: 1 + Math.random(), vy: -0.6 - Math.random() * 0.6, life: 40, max: 40, c: pick(['#1a1a1a', '#333', '#222']), s: 5, g: -0.01 });
+        spawnP({ x: o.x + 38, y: o.y - 8, vx: 1 + Math.random(), vy: -0.6 - Math.random() * 0.6, life: 40, max: 40, c: pick(['#1a1a1a', '#333', '#222']), s: 5, g: -0.01 });
     });
     obstacles = obstacles.filter(o => o.x > -70 && !o.gone);
     items.forEach(it => { it.x -= mv; });
     lines.forEach(l => { l.x -= mv; });
 
     items = items.filter(it => {
-      if (hit(box, { x: it.x, y: it.y, w: 24, h: 24 }, 0)) { collect(it); return false; }
+      if (Math.abs(it.x - PX) < 60 && hit(box, { x: it.x, y: it.y, w: 24, h: 24 }, 0)) { collect(it); return false; }
       return it.x > -30;
     });
     for (const l of lines) {
-      if (!l.used && hit(box, l, 0)) {
+      if (!l.used && l.x < PX + 40 && l.x + l.w > PX - 10 && hit(box, l, 0)) {
         l.used = true;
         burst(PX + 16, l.y + 5, 20, l.m.good ? ['#39d353', '#a7f070', '#ffffff'] : ['#ff3b30', '#ff8a8a', '#000'], 3.5, 28, 0.05, 3);
         applyMarket(l.m);
@@ -881,6 +930,7 @@
     lines = lines.filter(l => l.x > -100);
 
     if (invuln <= 0) for (const o of obstacles) {
+      if (o.x > PX + 80 || o.x + o.w < PX - 10) continue; // broad phase: only objects near Klód
       const ob = o.type === 'cursor' ? { x: o.x + 2, y: o.y, w: 16, h: 30 } : { x: o.x, y: o.y + 4, w: 44, h: 16 };
       if (hit(box, ob, 2)) {
         o.gone = true;
@@ -911,17 +961,17 @@
   }
   function text(s, x, y, size, color, align = 'left', base = 'top') {
     ctx.font = `${size}px ${FONT}`; ctx.textAlign = align; ctx.textBaseline = base;
-    ctx.fillStyle = '#000'; ctx.fillText(s, x + 2, y + 2);
+    if (perf.shadowsEnabled || size >= 12) { ctx.fillStyle = '#000'; ctx.fillText(s, x + 2, y + 2); }
     ctx.fillStyle = color; ctx.fillText(s, x, y);
   }
   function drawTheme(t) {
     tiled(t.skyC, offSky, 0);
-    if (t.cloudC) clouds.forEach(c => ctx.drawImage(t.cloudC, Math.round(c.x), Math.round(c.y)));
+    if (t.cloudC && perf.parallaxLayers >= 2) clouds.forEach(c => ctx.drawImage(t.cloudC, Math.round(c.x), Math.round(c.y)));
     if (t === THEMES[3]) { // twinkle
       for (let i = 0; i < 12; i++) if ((Math.floor(frame / 10) + i * 7) % 5 === 0) R(ctx, (i * 97 + 31) % W, (i * 53 + 17) % 400, 2, 2, '#ffffff');
     }
-    tiled(t.farC, offFar, 0);
-    tiled(t.nearC, offNear, 0);
+    if (perf.parallaxLayers >= 3 || perf.parallaxLayers === 1) tiled(t.farC, offFar, 0);
+    if (perf.parallaxLayers >= 2) tiled(t.nearC, offNear, 0);
     tiled(t.groundC, offGround, GY);
   }
 
@@ -1011,12 +1061,12 @@
       lines.forEach(drawLine);
       items.forEach(it => {
         const def = ITEMS[it.id], by = Math.round(it.y + Math.sin(frame / 8 + it.ph) * 3);
-        if (def.rar >= 3) {
+        if (def.rar >= 3 && perf.shadowsEnabled) {
           ctx.fillStyle = RAR[def.rar].col; ctx.globalAlpha = 0.25 + 0.15 * Math.sin(frame / 5);
           ctx.fillRect(Math.round(it.x) - 4, by - 4, 32, 32); ctx.globalAlpha = 1;
         }
         ctx.drawImage(def.spr, Math.round(it.x), by);
-        if (def.rar === 5 && Math.random() < 0.3) particles.push({ x: it.x + Math.random() * 24, y: by + Math.random() * 24, vx: 0, vy: -0.5, life: 16, max: 16, c: pick(['#ff3b30', '#ffe23f', '#39d353', '#3b8bff', '#a64dff']), s: 2, g: 0 });
+        if (def.rar === 5 && Math.random() < 0.3) spawnP({ x: it.x + Math.random() * 24, y: by + Math.random() * 24, vx: 0, vy: -0.5, life: 16, max: 16, c: pick(['#ff3b30', '#ffe23f', '#39d353', '#3b8bff', '#a64dff']), s: 2, g: 0 });
       });
       obstacles.forEach(drawObstacle);
     }
@@ -1041,11 +1091,30 @@
   }
 
   // ================= Loop =================
+  let frameCount = 0, lastFPSCheck = 0, fpsNow = 60, lowStrikes = 0;
+  function updateFPS(t) {
+    frameCount++;
+    if (t - lastFPSCheck < 1000) return;
+    fpsNow = frameCount; frameCount = 0;
+    const hidden = t - lastFPSCheck > 1500; // tab was in background, ignore
+    lastFPSCheck = t;
+    if (hidden || state !== 'play') return;
+    if (fpsNow < Math.min(30, perf.maxFPS - 5)) {
+      // adaptive quality: fewer particles, no blur/shadows, fewer layers
+      perf.maxParticles = Math.floor(perf.maxParticles * 0.8);
+      perf.shadowsEnabled = false;
+      if (perf.blurEnabled) { perf.blurEnabled = false; THEMES.forEach(th => { if (th.built) { th.built = false; } }); buildTheme(THEMES[themeCur]); if (themeNext >= 0) buildTheme(THEMES[themeNext]); }
+      if (++lowStrikes >= 3 && perf.parallaxLayers > 1) { perf.parallaxLayers--; lowStrikes = 0; }
+    } else lowStrikes = 0;
+  }
   function loop(t) {
+    requestAnimationFrame(loop);
+    const frameDelay = 1000 / perf.maxFPS;
+    if (lastT && t - lastT < frameDelay - 2) return; // FPS cap (2ms tolerance for vsync jitter)
     const dt = lastT ? Math.min(3, (t - lastT) / (1000 / 60)) : 1;
     lastT = t;
+    updateFPS(t);
     update(dt); draw();
-    requestAnimationFrame(loop);
   }
 
   // ================= Sound =================
@@ -1145,17 +1214,33 @@
   }
   bindHold($('btnJump'), 'jump');
   bindHold($('btnDuck'), 'duck');
-  cv.addEventListener('pointerdown', e => { if (state === 'play') { e.preventDefault(); input.jumpQueued = true; } });
+  let lastTouchTime = 0;
+  const canvasTap = e => {
+    if (state !== 'play') return;
+    e.preventDefault();
+    const now = performance.now();
+    if (now - lastTouchTime < 100) return; // debounce
+    lastTouchTime = now; input.jumpQueued = true;
+  };
+  cv.addEventListener('touchstart', canvasTap, { passive: false });
+  cv.addEventListener('mousedown', canvasTap);
 
   try { screen.orientation && screen.orientation.lock && screen.orientation.lock('portrait').catch(() => {}); } catch (e) {}
   document.addEventListener('visibilitychange', () => { lastT = 0; input.jump = input.duck = false; });
+  setInterval(() => { // periodic cleanup of anything that slipped off-screen
+    if (state !== 'play') return;
+    items = items.filter(i => i.x > -100 && i.x < W + 200);
+    obstacles = obstacles.filter(o => o.x > -100 && !o.gone);
+    lines = lines.filter(l => l.x > -150);
+    if (popups.length > 30) popups.splice(0, popups.length - 30);
+  }, 30000);
   window.addEventListener('resize', resize);
   window.addEventListener('orientationchange', () => setTimeout(resize, 200));
   resize();
   requestAnimationFrame(loop);
 
   // Debug/test hook
-  window.__bnpk = { get state() { return state; }, get score() { return score; }, start, ITEMS, THEMES, setTheme(i) { themeNext = i; fadeT = FADE - 1; } };
+  window.__bnpk = { get state() { return state; }, get score() { return score; }, start, ITEMS, THEMES, setTheme(i) { themeNext = i; buildTheme(THEMES[i]); fadeT = FADE - 1; }, perf, get fps() { return fpsNow; } };
 })();
 </script>
 </body>
