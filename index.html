@@ -1,0 +1,507 @@
+<!DOCTYPE html>
+<html lang="cs">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#1a1c2c">
+<title>Bankrot nebo Plná Kasa</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap" rel="stylesheet">
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+  html, body {
+    height: 100%; background: #1a1c2c; color: #f4f4f4;
+    font-family: "Press Start 2P", "Courier New", monospace;
+    overflow: hidden; user-select: none; -webkit-user-select: none; touch-action: manipulation;
+  }
+  #app {
+    height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 16px; padding: 16px;
+  }
+  #wrap { position: relative; width: 100%; max-width: 960px; }
+  canvas {
+    display: block; width: 100%; height: auto; image-rendering: pixelated; image-rendering: crisp-edges;
+    border: 4px solid #f4f4f4; box-shadow: 0 0 0 4px #000, 8px 8px 0 4px #000; background: #5fcde4;
+  }
+  .overlay {
+    position: absolute; inset: 4px; display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 4%; text-align: center; background: rgba(26, 28, 44, .72); padding: 12px;
+  }
+  .hidden { display: none !important; }
+  h1 { font-size: clamp(12px, 3.6vw, 32px); line-height: 1.5; color: #ffcd75; text-shadow: 3px 3px 0 #b13e53, 6px 6px 0 #000; }
+  h1 span { color: #4a9eff; text-shadow: 3px 3px 0 #29366f, 6px 6px 0 #000; }
+  h2 { font-size: clamp(14px, 3.6vw, 30px); color: #ef7d57; text-shadow: 3px 3px 0 #000; }
+  p { font-size: clamp(8px, 1.8vw, 14px); line-height: 1.8; color: #f4f4f4; }
+  .gold { color: #ffcd75; }
+  .btn {
+    font-family: inherit; font-size: clamp(12px, 2.6vw, 22px); color: #1a1c2c; background: #a7f070;
+    border: 4px solid #000; padding: 12px 28px; cursor: pointer; box-shadow: inset -4px -4px 0 #38b764, 4px 4px 0 #000;
+  }
+  .btn:active { transform: translate(4px, 4px); box-shadow: inset -4px -4px 0 #38b764; }
+  #controls { display: none; width: 100%; max-width: 960px; gap: 16px; }
+  .ctrl {
+    flex: 1; min-height: 96px; font-family: inherit; font-size: 36px; color: #f4f4f4; background: #3b5dc9;
+    border: 4px solid #000; box-shadow: inset -6px -6px 0 #29366f, 6px 6px 0 #000; touch-action: none;
+  }
+  .ctrl.on { background: #41a6f6; transform: translate(4px, 4px); box-shadow: inset -6px -6px 0 #29366f, 2px 2px 0 #000; }
+  #rotate {
+    position: fixed; inset: 0; z-index: 10; background: #1a1c2c; display: none;
+    flex-direction: column; align-items: center; justify-content: center; gap: 24px; padding: 24px; text-align: center;
+  }
+  #rotate .phone { width: 48px; height: 80px; border: 6px solid #f4f4f4; border-radius: 6px; animation: rot 1.6s steps(4) infinite; }
+  @keyframes rot { 0%, 30% { transform: rotate(90deg); } 70%, 100% { transform: rotate(0); } }
+  /* touch devices: show buttons */
+  @media (pointer: coarse) { #controls { display: flex; } }
+  /* touch device held in landscape: warn */
+  @media (pointer: coarse) and (orientation: landscape) and (max-height: 600px) { #rotate { display: flex; } }
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="wrap">
+    <canvas id="game" width="480" height="270"></canvas>
+
+    <div id="menu" class="overlay">
+      <h1>Bankrot<br>nebo <span>Plná Kasa</span></h1>
+      <button class="btn" id="playBtn">HRÁT</button>
+      <p>Nejlepší skóre: <span class="gold" id="bestMenu">0</span> tokenů</p>
+    </div>
+
+    <div id="over" class="overlay hidden">
+      <h2>BANKROT!</h2>
+      <p>Skóre: <span class="gold" id="scoreOver">0</span> tokenů</p>
+      <p id="newBest" class="gold hidden">★ NOVÝ REKORD ★</p>
+      <p>Nejlepší: <span class="gold" id="bestOver">0</span> tokenů</p>
+      <button class="btn" id="againBtn">ZNOVU</button>
+    </div>
+  </div>
+
+  <div id="controls">
+    <button class="ctrl" id="btnJump" aria-label="Skok">↑</button>
+    <button class="ctrl" id="btnDuck" aria-label="Podřep">↓</button>
+  </div>
+</div>
+
+<div id="rotate">
+  <div class="phone"></div>
+  <p>Otoč telefon<br>na výšku</p>
+</div>
+
+<script>
+(() => {
+  'use strict';
+
+  // ---------- Setup ----------
+  const W = 480, H = 270, GROUND = 222;
+  const cv = document.getElementById('game');
+  const ctx = cv.getContext('2d');
+  ctx.imageSmoothingEnabled = false;
+  const $ = id => document.getElementById(id);
+  const BEST_KEY = 'bnpk_best';
+
+  const loadBest = () => { try { return parseInt(localStorage.getItem(BEST_KEY), 10) || 0; } catch (e) { return 0; } };
+  const saveBest = v => { try { localStorage.setItem(BEST_KEY, String(v)); } catch (e) {} };
+  let best = loadBest();
+
+  // ---------- Pixel sprites ----------
+  // Each char = 1 pixel from palette; '.' = transparent. Drawn at scale 2.
+  function makeSprite(rows, pal, scale = 2) {
+    const c = document.createElement('canvas');
+    c.width = rows[0].length * scale; c.height = rows.length * scale;
+    const g = c.getContext('2d');
+    rows.forEach((r, y) => [...r].forEach((ch, x) => {
+      if (ch === '.') return;
+      g.fillStyle = pal[ch]; g.fillRect(x * scale, y * scale, scale, scale);
+    }));
+    return c;
+  }
+
+  const KP = { k: '#000000', b: '#4A9EFF', d: '#2a6fcc', l: '#9fd0ff', w: '#ffffff', r: '#ff4d4d', y: '#ffcd75', g: '#333c57' };
+  // Klód 16x16 -> 32x32
+  const klodBody = [
+    '.......rr.......',
+    '.......kk.......',
+    '.......kk.......',
+    '..kkkkkkkkkkkk..',
+    '..kllbbbbbbbbk..',
+    '..kbwwwbbwwwbk..',
+    '..kbwkkbbwkkbk..',
+    '..kbwkkbbwkkbk..',
+    '..kbbbbbbbbbbk..',
+    '..kbbkkkkkkbbk..',
+    '..kdbbbbbbbbdk..',
+    '..kkkkkkkkkkkk..',
+    '...kbbyybbbbk...',
+    '...kddddddddk...',
+  ];
+  const legsA = ['...kk.....kk....', '...kk...........'];
+  const legsB = ['..........kk....', '...kk.....kk....'];
+  const legsAir = ['...kk....kk.....', '..kk......kk....'];
+  const klodRun1 = makeSprite([...klodBody, ...legsA], KP);
+  const klodRun2 = makeSprite([...klodBody, ...legsB], KP);
+  const klodJump = makeSprite([...klodBody, ...legsAir], KP);
+  const klodDead = makeSprite([...klodBody.map(r => r.replace(/wkk/g, 'kwk').replace(/w/g, 'k').replace(/b(?=k.k)/g,'b')), ...legsAir], KP);
+  // Ducked Klód 20x10 -> 40x20
+  const klodDuck1 = makeSprite([
+    '...........rr.......',
+    '..kkkkkkkkkkkkkkkk..',
+    '..kllbbbbbbbbbbbbk..',
+    '..kbbbbbbwwwbbwwwk..',
+    '..kbbbbbbwkkbbwkkk..',
+    '..kbbbbbbbbbbbbbbk..',
+    '..kdbbyybbkkkkkbdk..',
+    '..kkkkkkkkkkkkkkkk..',
+    '...kk........kk.....',
+    '...kk...........kk..',
+  ], KP);
+  const klodDuck2 = makeSprite([
+    '...........rr.......',
+    '..kkkkkkkkkkkkkkkk..',
+    '..kllbbbbbbbbbbbbk..',
+    '..kbbbbbbwwwbbwwwk..',
+    '..kbbbbbbwkkbbwkkk..',
+    '..kbbbbbbbbbbbbbbk..',
+    '..kdbbyybbkkkkkbdk..',
+    '..kkkkkkkkkkkkkkkk..',
+    '.............kk.....',
+    '...kk.......kk......',
+  ], KP);
+
+  // Cursor 12x16 -> 24x32
+  const cursorSpr = makeSprite([
+    'k...........',
+    'kk..........',
+    'kgk.........',
+    'kggk........',
+    'kgggk.......',
+    'kggggk......',
+    'kgggggk.....',
+    'kggggggk....',
+    'kgggggggk...',
+    'kggggggggk..',
+    'kgggggkkkkk.',
+    'kggkggk.....',
+    'kgk.kggk....',
+    'kk..kggk....',
+    'k....kggk...',
+    '.....kkkk...',
+  ], { k: '#000000', g: '#888888' });
+
+  // Grog rocket 24x12 -> 48x24 (points left, flies left)
+  const grogRows = [
+    '.......kkk..............',
+    '.....kkwwwkk.........kk.',
+    '....kwwwwwwwkkkkkkkkkwk.',
+    '...kwwwwwwwwwwwwwwwwwwk.',
+    '..kwwwkkwwwkkwwwwwwwwwkk',
+    '.kwwwwkkwwwkkwwwggwwwwwk',
+    '.kwwwwwwwwwwwwwwggwwwwwk',
+    '..kwwwwwwwwwwwwwwwwwwwkk',
+    '...kwwwwwwwwwwwwwwwwwwk.',
+    '....kwwwwwwwkkkkkkkkkwk.',
+    '.....kkwwwkk.........kk.',
+    '.......kkk..............',
+  ];
+  const grogSpr = makeSprite(grogRows, { k: '#000000', w: '#f4f4f4', g: '#a0a0a0' });
+  const flameA = makeSprite(['.ry.', 'rryy', 'rryy', '.ry.'].map(r => r), { r: '#ff3b30', y: '#ffcd75' });
+  const flameB = makeSprite(['.rry..', 'rrryyy', 'rrryyy', '.rry..'], { r: '#ff3b30', y: '#ffcd75' });
+
+  // Token coin 8x8 -> 16x16
+  const coinA = makeSprite([
+    '..kkkk..', '.kyyyyk.', 'kyywwyyk', 'kyyw.yyk'.replace('.', 'y'), 'kyyyyyyk', 'kyyyyyyk', '.kyyyyk.', '..kkkk..',
+  ], { k: '#8b5a00', y: '#ffcd75', w: '#ffffff' });
+  const coinB = makeSprite(['...kk...', '..kyyk..', '..kywk..', '..kyyk..', '..kyyk..', '..kyyk..', '..kyyk..', '...kk...'],
+    { k: '#8b5a00', y: '#ffcd75', w: '#ffffff' });
+
+  // ---------- Background layers ----------
+  function mountainLayer(w, h, base, peakMin, peakMax, color, snow, seed) {
+    const c = document.createElement('canvas'); c.width = w; c.height = h;
+    const g = c.getContext('2d');
+    let s = seed; const rnd = () => (s = (s * 9301 + 49297) % 233280) / 233280;
+    const hts = []; let x = 0;
+    // generate peaks, ensure loop seamless by returning to same height at edge
+    let y = base;
+    for (x = 0; x < w; x += 4) {
+      const t = x / w;
+      const target = base - (peakMin + (peakMax - peakMin) * (0.5 + 0.5 * Math.sin(t * Math.PI * 2 * 3 + seed))) * (0.6 + 0.4 * rnd());
+      y += Math.sign(target - y) * 4;
+      hts.push(y);
+    }
+    // blend end to start
+    const n = hts.length;
+    for (let i = 0; i < 12; i++) hts[n - 12 + i] = Math.round(hts[n - 12 + i] + (hts[0] - hts[n - 12 + i]) * (i / 11) / 4) * 4;
+    hts.forEach((yy, i) => {
+      g.fillStyle = color; g.fillRect(i * 4, yy, 4, h - yy);
+      if (snow && yy < base - peakMax * 0.75) { g.fillStyle = snow; g.fillRect(i * 4, yy, 4, 8); }
+    });
+    return c;
+  }
+  const mountFar = mountainLayer(960, H, 200, 40, 110, '#8fa9d6', '#e8f0ff', 7);
+  const mountNear = mountainLayer(960, H, 214, 20, 60, '#38b764', null, 3);
+
+  const cloudSpr = makeSprite([
+    '....wwww......',
+    '..wwwwwwww....',
+    '.wwwwwwwwwww..',
+    'wwwwwwwwwwwwww',
+    '.wwwwwwwwwwww.',
+  ], { w: '#ffffff' }, 4);
+
+  // Ground tile 32x48
+  const groundTile = (() => {
+    const c = document.createElement('canvas'); c.width = 32; c.height = H - GROUND;
+    const g = c.getContext('2d');
+    g.fillStyle = '#8b5a3c'; g.fillRect(0, 0, 32, c.height);
+    g.fillStyle = '#a7f070'; g.fillRect(0, 0, 32, 6);
+    g.fillStyle = '#38b764'; g.fillRect(0, 6, 32, 4);
+    // grass tufts
+    [[2, -2], [10, -4], [20, -2], [26, -4]].forEach(([x, d]) => { g.fillStyle = '#a7f070'; g.fillRect(x, d, 2, -d); });
+    [[4, 10], [14, 12], [24, 10]].forEach(([x, y]) => { g.fillStyle = '#38b764'; g.fillRect(x, y, 4, 2); });
+    g.fillStyle = '#6b4226';
+    [[6, 20], [18, 26], [28, 18], [2, 34], [12, 38], [24, 36], [16, 16]].forEach(([x, y]) => g.fillRect(x, y, 4, 4));
+    g.fillStyle = '#b86f50';
+    [[10, 28], [26, 30], [4, 42], [20, 44]].forEach(([x, y]) => g.fillRect(x, y, 2, 2));
+    return c;
+  })();
+
+  // ---------- Game state ----------
+  const P = { x: 56, w: 32, h: 32 };
+  let state = 'menu'; // menu | play | over
+  let player, obstacles, coins, clouds, speed, dist, bonus, spawnT, coinT, frame, groundX, farX, nearX, shake, lastT;
+  const input = { jump: false, duck: false, jumpQueued: false };
+
+  function reset() {
+    player = { y: GROUND - 32, vy: 0, onGround: true, duck: false, dead: false };
+    obstacles = []; coins = [];
+    clouds = Array.from({ length: 5 }, (_, i) => ({ x: i * 110 + Math.random() * 60, y: 20 + Math.random() * 60, s: 0.15 + Math.random() * 0.15 }));
+    speed = 5; dist = 0; bonus = 0; spawnT = 60; coinT = 120; frame = 0; groundX = farX = nearX = 0; shake = 0;
+  }
+  reset();
+
+  const tokens = () => Math.floor(dist / 100) + bonus;
+
+  // ---------- Spawning ----------
+  function spawnObstacle() {
+    const score = tokens();
+    const grogChance = score > 15 ? Math.min(0.35, 0.15 + score / 800) : 0;
+    if (Math.random() < grogChance) {
+      // Grog flies at head height (must duck) or high (jump-safe / just wait)
+      const high = Math.random() < 0.3;
+      obstacles.push({ type: 'grog', x: W + 20, y: high ? GROUND - 92 : GROUND - 50, w: 48, h: 24, vx: 1.5 });
+    } else {
+      const n = score > 40 && Math.random() < 0.35 ? (score > 100 && Math.random() < 0.4 ? 3 : 2) : 1;
+      for (let i = 0; i < n; i++) obstacles.push({ type: 'cursor', x: W + 20 + i * 22, y: GROUND - 32, w: 24, h: 32, vx: 0 });
+    }
+    const gapMin = 42 + 380 / speed, gapMax = gapMin + 60;
+    spawnT = gapMin + Math.random() * (gapMax - gapMin);
+  }
+
+  function spawnCoin() {
+    const high = Math.random() < 0.5;
+    const y = high ? GROUND - 100 : GROUND - 30;
+    // avoid overlapping obstacles near spawn
+    if (!obstacles.some(o => o.x > W - 40)) {
+      const n = 1 + Math.floor(Math.random() * 3);
+      for (let i = 0; i < n; i++) coins.push({ x: W + 20 + i * 24, y, w: 16, h: 16 });
+    }
+    coinT = 90 + Math.random() * 120;
+  }
+
+  // ---------- Update ----------
+  function hit(a, b, pad = 4) {
+    return a.x + pad < b.x + b.w - pad && a.x + a.w - pad > b.x + pad && a.y + pad < b.y + b.h - pad && a.y + a.h - pad > b.y + pad;
+  }
+
+  function update(dt) {
+    frame += dt;
+    // background always drifts
+    clouds.forEach(c => { c.x -= c.s * dt * (state === 'play' ? speed / 5 : 1); if (c.x < -60) { c.x = W + Math.random() * 60; c.y = 20 + Math.random() * 60; } });
+
+    if (state !== 'play') { if (state === 'menu') { farX -= 0.3 * dt; nearX -= 0.8 * dt; groundX -= 2 * dt; } return; }
+
+    speed = Math.min(13, 5 + dist / 3500);
+    const mv = speed * dt;
+    dist += mv; groundX -= mv; farX -= mv * 0.15; nearX -= mv * 0.4;
+
+    // input
+    const p = player;
+    if ((input.jump || input.jumpQueued) && p.onGround && !input.duck) {
+      p.vy = -11.2; p.onGround = false; beep(520, 0.08, 'square');
+    }
+    input.jumpQueued = false;
+    const g = input.duck && !p.onGround ? 1.6 : (input.jump && p.vy < 0 ? 0.5 : 0.8); // variable jump + fast fall
+    p.vy += g * dt; p.y += p.vy * dt;
+    const hNow = p.onGround && input.duck ? 20 : 32;
+    if (p.y >= GROUND - hNow) { p.y = GROUND - hNow; p.vy = 0; p.onGround = true; }
+    p.duck = p.onGround && input.duck;
+    if (p.duck) p.y = GROUND - 20;
+
+    // spawn
+    spawnT -= dt; if (spawnT <= 0) spawnObstacle();
+    coinT -= dt; if (coinT <= 0) spawnCoin();
+
+    const box = p.duck ? { x: P.x - 4, y: p.y, w: 40, h: 20 } : { x: P.x, y: p.y, w: 32, h: 32 };
+
+    obstacles.forEach(o => { o.x -= (speed + o.vx) * dt; });
+    obstacles = obstacles.filter(o => o.x > -60);
+    coins.forEach(c => { c.x -= mv; });
+    coins = coins.filter(c => {
+      if (hit(box, c, 0)) { bonus += 5; beep(880, 0.06, 'square'); setTimeout(() => beep(1320, 0.08, 'square'), 60); return false; }
+      return c.x > -20;
+    });
+
+    for (const o of obstacles) {
+      const ob = o.type === 'cursor' ? { x: o.x + 2, y: o.y, w: 16, h: 30 } : { x: o.x, y: o.y + 4, w: 44, h: 16 };
+      if (hit(box, ob, 2)) { gameOver(); break; }
+    }
+  }
+
+  function gameOver() {
+    state = 'over'; player.dead = true; shake = 12;
+    beep(200, 0.25, 'sawtooth'); setTimeout(() => beep(110, 0.35, 'sawtooth'), 150);
+    const s = tokens();
+    const isBest = s > best;
+    if (isBest) { best = s; saveBest(best); }
+    $('scoreOver').textContent = s; $('bestOver').textContent = best; $('bestMenu').textContent = best;
+    $('newBest').classList.toggle('hidden', !isBest);
+    setTimeout(() => { if (state === 'over') $('over').classList.remove('hidden'); }, 450);
+  }
+
+  // ---------- Draw ----------
+  function tiled(img, off, y) {
+    const w = img.width; let x = ((off % w) + w) % w - w;
+    for (; x < W; x += w) ctx.drawImage(img, Math.round(x), y);
+  }
+
+  function drawDigits(txt, x, y, size, color, align = 'right') {
+    ctx.font = `${size}px "Press Start 2P", monospace`;
+    ctx.textAlign = align; ctx.textBaseline = 'top';
+    ctx.fillStyle = '#000'; ctx.fillText(txt, x + 2, y + 2);
+    ctx.fillStyle = color; ctx.fillText(txt, x, y);
+  }
+
+  function draw() {
+    ctx.save();
+    if (shake > 0) { ctx.translate((Math.random() - 0.5) * shake, (Math.random() - 0.5) * shake); shake *= 0.85; if (shake < 0.5) shake = 0; }
+
+    // sky gradient (banded for pixel feel)
+    const bands = ['#41a6f6', '#4fb3f3', '#5fc0ef', '#73cdea', '#8ad8e6', '#a6e2e2'];
+    const bh = Math.ceil(GROUND / bands.length);
+    bands.forEach((c, i) => { ctx.fillStyle = c; ctx.fillRect(0, i * bh, W, bh); });
+    // sun
+    ctx.fillStyle = '#fff3b0'; ctx.fillRect(390, 28, 32, 32); ctx.fillStyle = '#ffcd75'; ctx.fillRect(394, 32, 24, 24);
+
+    clouds.forEach(c => ctx.drawImage(cloudSpr, Math.round(c.x), Math.round(c.y)));
+    tiled(mountFar, farX, 0);
+    tiled(mountNear, nearX, 0);
+    tiled(groundTile, groundX, GROUND);
+
+    // coins
+    const cf = Math.floor(frame / 8) % 2 ? coinB : coinA;
+    coins.forEach(c => ctx.drawImage(cf, Math.round(c.x), Math.round(c.y + Math.sin((frame + c.x) / 8) * 2)));
+
+    // obstacles
+    obstacles.forEach(o => {
+      if (o.type === 'cursor') ctx.drawImage(cursorSpr, Math.round(o.x), o.y);
+      else {
+        const f = Math.floor(frame / 4) % 2 ? flameA : flameB;
+        ctx.drawImage(f, Math.round(o.x + 48), o.y + 12 - f.height / 2);
+        ctx.drawImage(grogSpr, Math.round(o.x), o.y);
+      }
+    });
+
+    // player
+    if (state !== 'menu') {
+      const p = player; let spr;
+      if (p.dead) spr = klodDead;
+      else if (p.duck) spr = Math.floor(frame / 5) % 2 ? klodDuck1 : klodDuck2;
+      else if (!p.onGround) spr = klodJump;
+      else spr = Math.floor(frame / 5) % 2 ? klodRun1 : klodRun2;
+      ctx.drawImage(spr, p.duck ? P.x - 4 : P.x, Math.round(p.y));
+    } else {
+      // idle Klód bobbing on menu
+      ctx.drawImage(Math.floor(frame / 8) % 2 ? klodRun1 : klodRun2, P.x, GROUND - 32);
+    }
+
+    // HUD (numbers only, no labels)
+    if (state === 'play' || state === 'over') {
+      ctx.drawImage(coinA, W - 26, 10);
+      drawDigits(String(tokens()).padStart(5, '0'), W - 32, 12, 12, '#ffcd75');
+      if (best > 0) drawDigits('HI ' + String(best).padStart(5, '0'), W - 32, 30, 8, '#f4f4f4');
+    }
+    ctx.restore();
+  }
+
+  // ---------- Loop ----------
+  function loop(t) {
+    const dt = lastT ? Math.min(3, (t - lastT) / (1000 / 60)) : 1;
+    lastT = t;
+    update(dt); draw();
+    requestAnimationFrame(loop);
+  }
+
+  // ---------- Sound (tiny, generated) ----------
+  let actx = null;
+  function beep(freq, dur, type) {
+    try {
+      actx = actx || new (window.AudioContext || window.webkitAudioContext)();
+      const o = actx.createOscillator(), g = actx.createGain();
+      o.type = type; o.frequency.value = freq; g.gain.value = 0.05;
+      g.gain.exponentialRampToValueAtTime(0.0001, actx.currentTime + dur);
+      o.connect(g).connect(actx.destination); o.start(); o.stop(actx.currentTime + dur);
+    } catch (e) {}
+  }
+
+  // ---------- Flow ----------
+  function start() {
+    reset(); state = 'play';
+    $('menu').classList.add('hidden'); $('over').classList.add('hidden');
+    input.jump = input.duck = false;
+    cv.focus && cv.focus();
+  }
+
+  $('playBtn').addEventListener('click', start);
+  $('againBtn').addEventListener('click', start);
+  $('bestMenu').textContent = best;
+
+  // Keyboard
+  const JUMP_KEYS = ['Space', 'ArrowUp', 'KeyW'], DUCK_KEYS = ['ArrowDown', 'KeyS'];
+  window.addEventListener('keydown', e => {
+    if (JUMP_KEYS.includes(e.code)) {
+      e.preventDefault();
+      if (state === 'menu' || (state === 'over' && !$('over').classList.contains('hidden'))) { if (!e.repeat) start(); return; }
+      if (!input.jump) input.jumpQueued = true;
+      input.jump = true;
+    } else if (DUCK_KEYS.includes(e.code)) { e.preventDefault(); input.duck = true; }
+    else if (e.code === 'Enter' && state !== 'play') { e.preventDefault(); start(); }
+  });
+  window.addEventListener('keyup', e => {
+    if (JUMP_KEYS.includes(e.code)) input.jump = false;
+    else if (DUCK_KEYS.includes(e.code)) input.duck = false;
+  });
+
+  // Touch buttons
+  function bindHold(el, key) {
+    const on = e => { e.preventDefault(); if (state === 'play') { if (key === 'jump' && !input.jump) input.jumpQueued = true; input[key] = true; } el.classList.add('on'); };
+    const off = e => { e.preventDefault(); input[key] = false; el.classList.remove('on'); };
+    el.addEventListener('pointerdown', on);
+    ['pointerup', 'pointercancel', 'pointerleave'].forEach(t => el.addEventListener(t, off));
+    el.addEventListener('contextmenu', e => e.preventDefault());
+  }
+  bindHold($('btnJump'), 'jump');
+  bindHold($('btnDuck'), 'duck');
+
+  // Tap on canvas also jumps (nice on desktop mouse too)
+  cv.addEventListener('pointerdown', e => { if (state === 'play') { e.preventDefault(); input.jumpQueued = true; } });
+
+  // Try to lock portrait where supported (installed PWA / fullscreen)
+  try { screen.orientation && screen.orientation.lock && screen.orientation.lock('portrait').catch(() => {}); } catch (e) {}
+
+  // Pause-safe: pressing when tab hidden resets timer
+  document.addEventListener('visibilitychange', () => { lastT = 0; });
+
+  requestAnimationFrame(loop);
+})();
+</script>
+</body>
+</html>
